@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
-import type { Request, Response } from 'express';
+import type { NextFunction, Request, Response } from 'express';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,6 +11,24 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT || 3000);
+const SITE_PASSCODE = process.env.SITE_PASSCODE || '171020';
+const activeSessions = new Set<string>();
+
+function isPasscodeValid(attempt: string): boolean {
+  const a = Buffer.from(attempt, 'utf-8');
+  const b = Buffer.from(SITE_PASSCODE, 'utf-8');
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+function requireAccessToken(req: Request, res: Response, next: NextFunction): void {
+  const token = req.header('x-access-token') || '';
+  if (!token || !activeSessions.has(token)) {
+    res.status(401).json({ error: 'Sessão bloqueada. Informe a senha para continuar.' });
+    return;
+  }
+  next();
+}
 const DATA_DIR = path.resolve(__dirname, 'data');
 const WORKSPACE_FILE = path.join(DATA_DIR, 'workspace.json');
 
@@ -223,7 +242,29 @@ async function startServer() {
     res.json({ ok: true });
   });
 
-  app.get('/api/workspace', (_req: Request, res: Response) => {
+  app.post('/api/auth/unlock', (req: Request, res: Response) => {
+    const { passcode } = (req.body || {}) as { passcode?: string };
+    if (typeof passcode !== 'string' || !isPasscodeValid(passcode.trim())) {
+      res.status(401).json({ error: 'Senha incorreta.' });
+      return;
+    }
+    const token = crypto.randomBytes(24).toString('hex');
+    activeSessions.add(token);
+    res.json({ token });
+  });
+
+  app.get('/api/auth/verify', (req: Request, res: Response) => {
+    const token = req.header('x-access-token') || '';
+    res.json({ unlocked: Boolean(token && activeSessions.has(token)) });
+  });
+
+  app.post('/api/auth/lock', (req: Request, res: Response) => {
+    const token = req.header('x-access-token') || '';
+    if (token) activeSessions.delete(token);
+    res.json({ ok: true });
+  });
+
+  app.get('/api/workspace', requireAccessToken, (_req: Request, res: Response) => {
     try {
       const workspace = readWorkspaceFromDisk();
       res.json(workspace);
@@ -234,7 +275,7 @@ async function startServer() {
     }
   });
 
-  app.put('/api/workspace', (req: Request, res: Response) => {
+  app.put('/api/workspace', requireAccessToken, (req: Request, res: Response) => {
     try {
       const body = req.body as Partial<ServerWorkspace>;
       if (!body || !Array.isArray(body.threads) || body.threads.length === 0) {
@@ -262,7 +303,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/assistant/transcribe', async (req: Request, res: Response) => {
+  app.post('/api/assistant/transcribe', requireAccessToken, async (req: Request, res: Response) => {
     try {
       const { audioBase64, mimeType } = req.body as {
         audioBase64?: string;
@@ -305,7 +346,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/assistant/chat', async (req: Request, res: Response) => {
+  app.post('/api/assistant/chat', requireAccessToken, async (req: Request, res: Response) => {
     try {
       const {
         message,

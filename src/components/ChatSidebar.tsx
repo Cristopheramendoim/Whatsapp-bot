@@ -2,6 +2,7 @@ import React, { useRef, useState } from 'react';
 import {
   Download,
   HardDrive,
+  Lock,
   MessageSquarePlus,
   Search,
   Trash2,
@@ -19,6 +20,7 @@ interface ChatSidebarProps {
   onDeleteThread: (threadId: string) => void;
   onExportBackup: () => void;
   onImportBackup: (file: File) => void;
+  onLockSite?: () => void;
 }
 
 export function ChatSidebar({
@@ -29,6 +31,7 @@ export function ChatSidebar({
   onDeleteThread,
   onExportBackup,
   onImportBackup,
+  onLockSite,
 }: ChatSidebarProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [isCreating, setIsCreating] = useState(false);
@@ -225,13 +228,26 @@ export function ChatSidebar({
         )}
       </div>
 
-      {/* Footer server storage status */}
+      {/* Footer server storage status & lock */}
       <div className="px-4 py-2.5 border-t border-[#222E35] text-[12px] text-[#8696A0] flex items-center justify-between gap-2 shrink-0">
         <div className="flex items-center gap-1.5 min-w-0">
           <HardDrive className="w-3.5 h-3.5 text-[#00A884] shrink-0" />
           <span className="truncate">Salvo no servidor</span>
         </div>
-        <span className="font-mono tabular-nums shrink-0">{threads.length} chats</span>
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="font-mono tabular-nums">{threads.length} chats</span>
+          {onLockSite && (
+            <button
+              type="button"
+              onClick={onLockSite}
+              title="Bloquear tela com senha"
+              className="inline-flex items-center gap-1 text-xs font-medium text-[#AEBAC1] hover:text-[#00A884] py-1 px-1.5 rounded transition-colors"
+            >
+              <Lock className="w-3.5 h-3.5" />
+              <span>Bloquear</span>
+            </button>
+          )}
+        </div>
       </div>
     </aside>
   );

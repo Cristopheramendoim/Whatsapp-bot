@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ChatSidebar } from './components/ChatSidebar';
 import { ChatWindow, type StagedAttachment } from './components/ChatWindow';
 import { MobileNav } from './components/MobileNav';
+import { PasscodeGate } from './components/PasscodeGate';
 import { TaskPanel } from './components/TaskPanel';
 import type {
   ChatMessage,
@@ -17,11 +18,28 @@ import {
   type WorkspaceState,
 } from './utils/storage';
 
+const TOKEN_STORAGE_KEY = 'zapassist_access_token';
+
 function makeId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
 
 export default function App() {
+  const [accessToken, setAccessToken] = useState<string | null>(() => {
+    try {
+      return sessionStorage.getItem(TOKEN_STORAGE_KEY);
+    } catch {
+      return null;
+    }
+  });
+  const [authChecking, setAuthChecking] = useState<boolean>(() => {
+    try {
+      return Boolean(sessionStorage.getItem(TOKEN_STORAGE_KEY));
+    } catch {
+      return false;
+    }
+  });
+
   const [workspace, setWorkspace] = useState<WorkspaceState | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [mobileTab, setMobileTab] = useState<MobileTab>('chat');
@@ -38,13 +56,61 @@ export default function App() {
     setTimeout(() => setToastText((prev) => (prev === msg ? null : prev)), 2800);
   }
 
-  // Load workspace from local server on mount
+  function handleClearLock() {
+    try {
+      sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+    } catch {
+      // ignore
+    }
+    hasHydratedRef.current = false;
+    setAccessToken(null);
+    setWorkspace(null);
+  }
+
+  // Verify stored token on startup
   useEffect(() => {
+    if (!accessToken) {
+      setAuthChecking(false);
+      return;
+    }
+
+    let cancelled = false;
+    fetch('/api/auth/verify', {
+      headers: { 'x-access-token': accessToken },
+    })
+      .then((res) => res.json() as Promise<{ unlocked?: boolean }>)
+      .then((data) => {
+        if (cancelled) return;
+        if (!data.unlocked) {
+          handleClearLock();
+        }
+        setAuthChecking(false);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAuthChecking(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Load workspace from local server once unlocked
+  useEffect(() => {
+    if (!accessToken || authChecking) return;
     let cancelled = false;
 
     async function fetchServerWorkspace() {
       try {
-        const res = await fetch('/api/workspace');
+        const res = await fetch('/api/workspace', {
+          headers: { 'x-access-token': accessToken || '' },
+        });
+        if (res.status === 401) {
+          if (!cancelled) handleClearLock();
+          return;
+        }
         if (!res.ok) {
           throw new Error('Não foi possível carregar os dados do servidor.');
         }
@@ -68,21 +134,29 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [accessToken, authChecking]);
 
   // Persist workspace updates to server sequentially & keep local mirror
   useEffect(() => {
-    if (!workspace || !hasHydratedRef.current) return;
+    if (!accessToken || !workspace || !hasHydratedRef.current) return;
     saveWorkspace(workspace);
 
     const snapshot = workspace;
+    const token = accessToken;
     saveQueueRef.current = saveQueueRef.current
       .then(async () => {
         const res = await fetch('/api/workspace', {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'x-access-token': token,
+          },
           body: JSON.stringify(snapshot),
         });
+        if (res.status === 401) {
+          handleClearLock();
+          return;
+        }
         if (!res.ok) {
           throw new Error('Falha ao salvar no servidor.');
         }
@@ -90,7 +164,45 @@ export default function App() {
       .catch(() => {
         showToast('Aviso: não foi possível sincronizar a última alteração no servidor.');
       });
-  }, [workspace]);
+  }, [workspace, accessToken]);
+
+  function handleUnlocked(token: string) {
+    try {
+      sessionStorage.setItem(TOKEN_STORAGE_KEY, token);
+    } catch {
+      // ignore
+    }
+    setLoadError(null);
+    setAccessToken(token);
+    setAuthChecking(false);
+  }
+
+  async function handleLockSite() {
+    const token = accessToken;
+    handleClearLock();
+    if (token) {
+      try {
+        await fetch('/api/auth/lock', {
+          method: 'POST',
+          headers: { 'x-access-token': token },
+        });
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  if (authChecking) {
+    return (
+      <div className="min-h-dvh bg-[#0B141A] text-[#E9EDEF] flex items-center justify-center p-6">
+        <p className="text-sm text-[#8696A0]">Verificando acesso...</p>
+      </div>
+    );
+  }
+
+  if (!accessToken) {
+    return <PasscodeGate onUnlocked={handleUnlocked} />;
+  }
 
   if (!workspace) {
     return (
@@ -286,6 +398,7 @@ export default function App() {
   }
 
   async function handleSendMessage(text: string, attachment?: StagedAttachment) {
+    if (!accessToken) return;
     const threadId = activeThread.id;
     const now = new Date().toISOString();
     const userMsgId = makeId('msg');
@@ -345,12 +458,20 @@ export default function App() {
         setBusyStatus('Transcrevendo áudio...');
         const transcribeRes = await fetch('/api/assistant/transcribe', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'x-access-token': accessToken,
+          },
           body: JSON.stringify({
             audioBase64: attachment.base64,
             mimeType: attachment.mimeType,
           }),
         });
+
+        if (transcribeRes.status === 401) {
+          handleClearLock();
+          return;
+        }
 
         const transcribeData = (await transcribeRes.json()) as {
           transcription?: string;
@@ -394,7 +515,10 @@ export default function App() {
 
       const chatRes = await fetch('/api/assistant/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-access-token': accessToken,
+        },
         body: JSON.stringify({
           message: messageToSend,
           history: historySnapshot,
@@ -413,6 +537,11 @@ export default function App() {
           })),
         }),
       });
+
+      if (chatRes.status === 401) {
+        handleClearLock();
+        return;
+      }
 
       const chatData = (await chatRes.json()) as {
         reply?: string;
@@ -491,14 +620,17 @@ export default function App() {
   }
 
   async function handleExtractTasksFromMessage(message: ChatMessage) {
-    if (isBusy) return;
+    if (isBusy || !accessToken) return;
     setIsBusy(true);
     setBusyStatus('Extraindo tarefas...');
 
     try {
       const res = await fetch('/api/assistant/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'x-access-token': accessToken,
+        },
         body: JSON.stringify({
           message: `Extraia tarefas práticas deste conteúdo:\n\n${message.text}`,
           extractTasksOnly: true,
@@ -509,6 +641,11 @@ export default function App() {
           })),
         }),
       });
+
+      if (res.status === 401) {
+        handleClearLock();
+        return;
+      }
 
       const data = (await res.json()) as {
         suggestedTasks?: SuggestedTask[];
@@ -609,6 +746,7 @@ export default function App() {
             onDeleteThread={handleDeleteThread}
             onExportBackup={handleExportBackup}
             onImportBackup={handleImportBackup}
+            onLockSite={() => void handleLockSite()}
           />
         </div>
 

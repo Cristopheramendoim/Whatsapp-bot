@@ -12,6 +12,7 @@ import pino from 'pino';
 const MEU_NUMERO = '5512981555800';
 const MEU_JID = `${MEU_NUMERO}@s.whatsapp.net`;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'COLE_SUA_CHAVE_GEMINI_AQUI';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-4-hydrogen';
 const ARQUIVO_LEMBRETES = './lembretes.json';
 // =================================================
 
@@ -150,7 +151,7 @@ Regras obrigatórias de resposta:
   ];
 
   const response = await ai.models.generateContent({
-    model: 'gemini-4-hydrogen',
+    model: GEMINI_MODEL,
     contents,
     config: {
       systemInstruction,
