@@ -1,0 +1,200 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidUser(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'email', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'email', 'photoURL', 'createdAt', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.uid == userId
+        && data.uid == request.auth.uid
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 200
+        && (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 500))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidThread(data, userId, threadId) {
+      return data.keys().hasAll(['id', 'ownerId', 'title', 'subtitle', 'lastPreview', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'ownerId', 'title', 'subtitle', 'lastPreview', 'createdAt', 'updatedAt'])
+        && isValidId(data.id)
+        && data.id == threadId
+        && isValidId(data.ownerId)
+        && data.ownerId == userId
+        && data.ownerId == request.auth.uid
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 80
+        && data.subtitle is string && data.subtitle.size() <= 160
+        && data.lastPreview is string && data.lastPreview.size() <= 240
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidMessage(data, userId, threadId, messageId) {
+      return data.keys().hasAll(['id', 'ownerId', 'threadId', 'sender', 'text', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'ownerId', 'threadId', 'sender', 'text', 'transcription',
+          'attachmentName', 'attachmentMime', 'attachmentSize', 'attachmentKind',
+          'attachmentDataUrl', 'suggestedTasks', 'addedTaskTitles', 'error',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.id == messageId
+        && isValidId(data.ownerId)
+        && data.ownerId == userId
+        && data.ownerId == request.auth.uid
+        && isValidId(data.threadId)
+        && data.threadId == threadId
+        && data.sender in ['user', 'assistant']
+        && data.text is string && data.text.size() <= 8000
+        && (!('transcription' in data) || (data.transcription is string && data.transcription.size() <= 8000))
+        && (!('attachmentName' in data) || (data.attachmentName is string && data.attachmentName.size() <= 200))
+        && (!('attachmentMime' in data) || (data.attachmentMime is string && data.attachmentMime.size() <= 100))
+        && (!('attachmentSize' in data) || (data.attachmentSize is number && data.attachmentSize >= 0 && data.attachmentSize <= 20000000))
+        && (!('attachmentKind' in data) || data.attachmentKind in ['image', 'audio', 'document'])
+        && (!('attachmentDataUrl' in data) || (data.attachmentDataUrl is string && data.attachmentDataUrl.size() <= 350000))
+        && (!('suggestedTasks' in data) || (data.suggestedTasks is list && data.suggestedTasks.size() <= 8 && (data.suggestedTasks.size() == 0 || data.suggestedTasks[0] is map)))
+        && (!('addedTaskTitles' in data) || (data.addedTaskTitles is list && data.addedTaskTitles.size() <= 8 && (data.addedTaskTitles.size() == 0 || data.addedTaskTitles[0] is string)))
+        && (!('error' in data) || data.error is bool)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTask(data, userId, taskId) {
+      return data.keys().hasAll(['id', 'ownerId', 'title', 'priority', 'completed', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'ownerId', 'title', 'notes', 'priority', 'completed', 'sourceThreadTitle', 'createdAt', 'updatedAt'])
+        && isValidId(data.id)
+        && data.id == taskId
+        && isValidId(data.ownerId)
+        && data.ownerId == userId
+        && data.ownerId == request.auth.uid
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 140
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 240))
+        && data.priority in ['alta', 'media', 'baixa']
+        && data.completed is bool
+        && (!('sourceThreadTitle' in data) || (data.sourceThreadTitle is string && data.sourceThreadTitle.size() <= 80))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false;
+      allow create: if isOwner(userId)
+        && isValidId(userId)
+        && isValidUser(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isOwner(userId)
+        && isValidId(userId)
+        && isValidUser(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'email', 'photoURL', 'updatedAt']);
+      allow delete: if false;
+
+      match /threads/{threadId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(threadId);
+        allow list: if isOwner(userId) && resource.data.ownerId == request.auth.uid;
+        allow create: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(threadId)
+          && isValidThread(incoming(), userId, threadId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId));
+        allow update: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(threadId)
+          && isValidThread(incoming(), userId, threadId)
+          && incoming().id == existing().id
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['title', 'subtitle', 'lastPreview', 'updatedAt']);
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(threadId);
+
+        match /messages/{messageId} {
+          allow get: if isOwner(userId) && isValidId(userId) && isValidId(threadId) && isValidId(messageId);
+          allow list: if isOwner(userId) && resource.data.ownerId == request.auth.uid;
+          allow create: if isOwner(userId)
+            && isValidId(userId)
+            && isValidId(threadId)
+            && isValidId(messageId)
+            && isValidMessage(incoming(), userId, threadId, messageId)
+            && incoming().createdAt == request.time
+            && incoming().updatedAt == request.time
+            && exists(/databases/$(database)/documents/users/$(userId)/threads/$(threadId));
+          allow update: if isOwner(userId)
+            && isValidId(userId)
+            && isValidId(threadId)
+            && isValidId(messageId)
+            && isValidMessage(incoming(), userId, threadId, messageId)
+            && incoming().id == existing().id
+            && incoming().ownerId == existing().ownerId
+            && incoming().threadId == existing().threadId
+            && incoming().sender == existing().sender
+            && incoming().createdAt == existing().createdAt
+            && incoming().updatedAt == request.time
+            && (
+              incoming().diff(existing()).affectedKeys().hasOnly(['transcription', 'updatedAt'])
+              || incoming().diff(existing()).affectedKeys().hasOnly(['suggestedTasks', 'updatedAt'])
+              || incoming().diff(existing()).affectedKeys().hasOnly(['addedTaskTitles', 'updatedAt'])
+            );
+          allow delete: if isOwner(userId) && isValidId(userId) && isValidId(threadId) && isValidId(messageId);
+        }
+      }
+
+      match /tasks/{taskId} {
+        allow get: if isOwner(userId) && isValidId(userId) && isValidId(taskId);
+        allow list: if isOwner(userId) && resource.data.ownerId == request.auth.uid;
+        allow create: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(taskId)
+          && isValidTask(incoming(), userId, taskId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId));
+        allow update: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(taskId)
+          && isValidTask(incoming(), userId, taskId)
+          && incoming().id == existing().id
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly(['completed', 'updatedAt'])
+            || incoming().diff(existing()).affectedKeys().hasOnly(['priority', 'updatedAt'])
+            || incoming().diff(existing()).affectedKeys().hasOnly(['title', 'notes', 'priority', 'updatedAt'])
+          );
+        allow delete: if isOwner(userId) && isValidId(userId) && isValidId(taskId);
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "ZapAssist",
+  "description": "Assistente pessoal estilo WhatsApp com IA em português, transcrição de áudio, leitura de anexos e lista de tarefas com prioridades.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
